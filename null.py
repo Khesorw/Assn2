@@ -1,23 +1,11 @@
 import gymnasium as gym
-import create3_env  
+import create3_env  # Your package where CreateRedBall-v0 is registered
 
-# Create env
-env = gym.make("create3_env/CreateRedBall-v0", render_mode="human")
+env = gym.make("create3_env/CreateRedBall-v0")
 print('Environment created successfully')
 
-# Reset
-observation, info = env.reset()
-print(f"Initial observation: {observation}")
-
-
-for _ in range(10):
-    action = env.action_space.sample()  # pick a random action
-    observation, reward, terminated, truncated, info = env.step(action)
-    print(f"Step -> obs={observation}, reward={reward}, terminated={terminated}, truncated={truncated}")
-
-    if terminated or truncated:
-        observation, info = env.reset()
-        print(f"Episode reset: {observation}")
-
+obs, info = env.reset()
+for _ in range(5):
+    obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
+    print(f"Reward: {reward}, Detected: {info['red_ball_detected']}, Obs shape: {obs.shape}")
 env.close()
-print("Environment closed")
