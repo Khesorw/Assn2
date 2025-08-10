@@ -9,92 +9,70 @@ import cv2
 import numpy as np
 
 class RedBall(Node):
-    """
-    ROS 2 node to detect red balls and store latest frame/detection flag.
-    """
     def __init__(self):
         super().__init__('redball')
         self.subscription = self.create_subscription(
             Image,
             'custom_ns/camera1/image_raw',
             self.listener_callback,
-            10)
+            10
+        )
         self.br = CvBridge()
-        self.target_publisher = self.create_publisher(Image, 'target_redball', 10)
         self.twist_publisher = self.create_publisher(Twist, 'cmd_vel', 10)
 
         self.latest_frame = None
         self.ball_detected = False
+        self.redball_x = -1  # -1 means "not detected"
 
     def listener_callback(self, msg):
-        # Convert ROS image to OpenCV format
         frame = self.br.imgmsg_to_cv2(msg, desired_encoding='rgb8')
         self.latest_frame = frame.copy()
         self.ball_detected = False
+        self.redball_x = -1
 
-       
-        hsv_conv_img = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+        hsv_img = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
 
-        # Correct red HSV range
         lower_red1 = (0, 100, 100)
         upper_red1 = (10, 255, 255)
         lower_red2 = (160, 100, 100)
         upper_red2 = (179, 255, 255)
-        mask1 = cv2.inRange(hsv_conv_img, lower_red1, upper_red1)
-        mask2 = cv2.inRange(hsv_conv_img, lower_red2, upper_red2)
+        mask1 = cv2.inRange(hsv_img, lower_red1, upper_red1)
+        mask2 = cv2.inRange(hsv_img, lower_red2, upper_red2)
         red_mask = cv2.bitwise_or(mask1, mask2)
 
-        # Blur and morph
         blurred_mask = cv2.GaussianBlur(red_mask, (9, 9), 3, 3)
-        erode_element = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-        dilate_element = cv2.getStructuringElement(cv2.MORPH_RECT, (8, 8))
-        eroded_mask = cv2.erode(blurred_mask, erode_element)
-        dilated_mask = cv2.dilate(eroded_mask, dilate_element)
+        eroded = cv2.erode(blurred_mask, np.ones((3, 3), np.uint8))
+        dilated = cv2.dilate(eroded, np.ones((8, 8), np.uint8))
 
-        detected_circles = cv2.HoughCircles(
-            dilated_mask, cv2.HOUGH_GRADIENT, 1, 150,
+        circles = cv2.HoughCircles(
+            dilated, cv2.HOUGH_GRADIENT, 1, 150,
             param1=100, param2=20, minRadius=2, maxRadius=2000
         )
 
-        if detected_circles is not None:
-            self.get_logger().info('Red ball detected!')
+        if circles is not None:
             self.ball_detected = True
-            for circle in detected_circles[0, :]:
-                circled_orig = cv2.circle(
-                    frame, (int(circle[0]), int(circle[1])),
-                    int(circle[2]), (0, 255, 0), thickness=3
-                )
-            self.target_publisher.publish(self.br.cv2_to_imgmsg(circled_orig, encoding='rgb8'))
+            x = int(circles[0, 0, 0])
+            self.redball_x = max(0, min(x, 640))  # clamp to [0, 640]
         else:
-            self.get_logger().info('No ball detected')
+            self.redball_x = -1
+
+
 
 class CreateRedBall(gym.Env):
-    """
-    Gymnasium environment wrapping the RedBall ROS2 node.
-    Observations: latest camera frame
-    Actions: 0 = left, 1 = right
-    """
     metadata = {"render_modes": []}
 
-    def __init__(self, render_mode=None):
+    def __init__(self):
         super().__init__()
         rclpy.init()
-
         self.redball = RedBall()
-        self.action_space = spaces.Discrete(2)  # left, right
 
-        # Wait for first image to set observation space
-        print("Waiting for first image from /custom_ns/camera1/image_raw...")
+        self.action_space = spaces.Discrete(2)  # 0=left, 1=right
+        # Observation is normalized x position of ball or 1.0 if not detected
+        self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
+
+        print("Waiting for first image...")
         while rclpy.ok() and self.redball.latest_frame is None:
             rclpy.spin_once(self.redball, timeout_sec=0.5)
-
-        if self.redball.latest_frame is not None:
-            h, w, c = self.redball.latest_frame.shape
-            self.observation_space = spaces.Box(low=0, high=255, shape=(h, w, c), dtype=np.uint8)
-            print(f"Image shape detected: {h}x{w}x{c}")
-        else:
-            print("No image received; defaulting to 480x640x3")
-            self.observation_space = spaces.Box(low=0, high=255, shape=(480, 640, 3), dtype=np.uint8)
 
         self.step_count = 0
 
@@ -102,27 +80,42 @@ class CreateRedBall(gym.Env):
         super().reset(seed=seed)
         self.step_count = 0
         rclpy.spin_once(self.redball, timeout_sec=0.5)
-        obs = self.redball.latest_frame if self.redball.latest_frame is not None else np.zeros(self.observation_space.shape, dtype=np.uint8)
+        obs = self._get_obs()
         return obs, {}
 
     def step(self, action):
         twist = Twist()
         if action == 0:
-            twist.angular.z = 0.5  
+            twist.angular.z = 0.5
         elif action == 1:
-            twist.angular.z = -0.5  
+            twist.angular.z = -0.5
         self.redball.twist_publisher.publish(twist)
 
         rclpy.spin_once(self.redball, timeout_sec=0.2)
 
-        obs = self.redball.latest_frame if self.redball.latest_frame is not None else np.zeros(self.observation_space.shape, dtype=np.uint8)
-        reward = 1.0 if self.redball.ball_detected else 0.0
+        obs = self._get_obs()
+        reward = self._compute_reward(obs)
+        self.step_count += 1
         terminated = False
         truncated = self.step_count >= 100
-        self.step_count += 1
 
-        return obs, reward, terminated, truncated, {"red_ball_detected": self.redball.ball_detected}
+        return obs, reward, terminated, truncated, {}
+
+    def _get_obs(self):
+        if self.redball.redball_x >= 0:
+            # Normalize by max x (641)
+            norm_x = self.redball.redball_x / 641.0
+            return np.array([norm_x], dtype=np.float32)
+        else:
+            return np.array([1.0], dtype=np.float32)  # no ball detected
+
+    def _compute_reward(self, obs):
+        # Reward is higher the closer the ball is to center (0.5)
+        if obs[0] == 1.0:  # no ball
+            return -1.0
+        return 1.0 - abs(obs[0] - 0.5) * 2  # closer to center (0.5) better
 
     def close(self):
         self.redball.destroy_node()
         rclpy.shutdown()
+
