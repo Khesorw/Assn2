@@ -1,5 +1,5 @@
 import gymnasium as gym
-import create3_env  # Your package where CreateRedBall-v0 is registered
+import create3_env  
 
 env = gym.make("create3_env/CreateRedBall-v0")
 print('Environment created successfully')

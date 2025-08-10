@@ -32,7 +32,7 @@ class RedBall(Node):
         self.latest_frame = frame.copy()
         self.ball_detected = False
 
-        # Convert to HSV
+       
         hsv_conv_img = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
 
         # Correct red HSV range
@@ -51,7 +51,6 @@ class RedBall(Node):
         eroded_mask = cv2.erode(blurred_mask, erode_element)
         dilated_mask = cv2.dilate(eroded_mask, dilate_element)
 
-        # Detect circles
         detected_circles = cv2.HoughCircles(
             dilated_mask, cv2.HOUGH_GRADIENT, 1, 150,
             param1=100, param2=20, minRadius=2, maxRadius=2000
@@ -109,9 +108,9 @@ class CreateRedBall(gym.Env):
     def step(self, action):
         twist = Twist()
         if action == 0:
-            twist.angular.z = 0.5  # turn left
+            twist.angular.z = 0.5  
         elif action == 1:
-            twist.angular.z = -0.5  # turn right
+            twist.angular.z = -0.5  
         self.redball.twist_publisher.publish(twist)
 
         rclpy.spin_once(self.redball, timeout_sec=0.2)
